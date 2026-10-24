@@ -21,6 +21,7 @@ from importers.ebkp_reader import lese_ebkp_liste
 from importers.ifc_reader import EINSTELLUNGEN_STANDARD, lese_hochgeladene_ifc
 from validation.list_checks import pruefe_liste
 from validation.model_checks import FEHLER, hat_fehler, pruefe_modell
+from visualization.charts import diagramm_kosten_je_gruppe
 
 EXCEL_TYP = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -135,6 +136,8 @@ st.dataframe(
         "anteil": st.column_config.ProgressColumn("Anteil", format="percent", min_value=0, max_value=1),
     },
 )
+
+st.pyplot(diagramm_kosten_je_gruppe(kosten))
 
 # ---------------------------------------------------------------- 7 Exportieren
 st.header("6 · Exportieren")
