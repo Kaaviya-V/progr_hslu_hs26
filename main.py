@@ -17,6 +17,7 @@ import streamlit as st
 from calculation.costs import berechne_kosten, berechne_total
 from calculation.mapping import ordne_zu
 from export.excel_writer import schreibe_auffaelligkeiten, schreibe_kostenschaetzung
+from export.ifc_writer import oeffne_hochgeladene_ifc, schreibe_gesamtmodell
 from importers.ebkp_reader import lese_ebkp_liste
 from importers.ifc_reader import EINSTELLUNGEN_STANDARD, lese_hochgeladene_ifc
 from validation.list_checks import pruefe_liste
@@ -156,3 +157,23 @@ st.download_button(
     mime=EXCEL_TYP,
     type="primary",
 )
+
+# Gesamtmodell: dauert einige Sekunden und gibt eine grosse Datei, darum erst auf Knopfdruck.
+# Das Ergebnis bleibt im Session State, solange IFC-Dateien und Liste gleich bleiben.
+st.subheader("IFC-Gesamtmodell")
+st.caption("Alle Fachmodelle in einer Datei, jedes Bauteil mit Pset_KOSTRA (Pos-ID, Menge, Kosten, Status).")
+gesamt_schluessel = (st.session_state["ifc_schluessel"], liste_datei.name, liste_datei.size)
+gespeichert = st.session_state.get("gesamtmodell")
+if gespeichert is None or gespeichert[0] != gesamt_schluessel:
+    if st.button("Gesamtmodell erstellen"):
+        with st.spinner("Gesamtmodell wird erstellt …"):
+            inhalt = schreibe_gesamtmodell(oeffne_hochgeladene_ifc(ifc_dateien), bauteilkosten, positionen)
+        st.session_state["gesamtmodell"] = (gesamt_schluessel, inhalt)
+        st.rerun()
+else:
+    st.download_button(
+        f"Gesamtmodell herunterladen ({len(gespeichert[1]) / 1e6:.0f} MB)",
+        gespeichert[1],
+        file_name="KOSTRA_Gesamtmodell.ifc",
+        mime="application/x-step",
+    )
