@@ -65,7 +65,24 @@ def lese_ifc(pfad, einstellungen=EINSTELLUNGEN_STANDARD):
     """Liest eine IFC-Datei und gibt eine Tabelle mit einer Zeile pro Bauteil zurueck."""
     pfad = Path(pfad)
     modell = ifcopenshell.open(str(pfad))
-    fachmodell = pfad.stem.split("_")[-1]  # "25.011_N_WKLN-EW" -> "WKLN-EW"
+    return _lese_bauteile(modell, pfad.name, einstellungen)
+
+
+def lese_hochgeladene_ifc(dateien, einstellungen=EINSTELLUNGEN_STANDARD):
+    """Liest IFC-Dateien, die nur im Arbeitsspeicher liegen (z.B. Upload in Streamlit).
+
+    Jede Datei braucht .name (Dateiname) und .getvalue() (Inhalt als Bytes).
+    """
+    tabellen = []
+    for datei in dateien:
+        modell = ifcopenshell.file.from_string(datei.getvalue().decode("utf-8"))
+        tabellen.append(_lese_bauteile(modell, datei.name, einstellungen))
+    return pd.concat(tabellen, ignore_index=True)
+
+
+def _lese_bauteile(modell, dateiname, einstellungen):
+    """Eine Zeile pro Bauteil eines geoeffneten IFC-Modells."""
+    fachmodell = Path(dateiname).stem.split("_")[-1]  # "25.011_N_WKLN-EW" -> "WKLN-EW"
 
     zeilen = []
     for bauteil in modell.by_type("IfcElement"):
@@ -75,7 +92,7 @@ def lese_ifc(pfad, einstellungen=EINSTELLUNGEN_STANDARD):
         psets = ifcopenshell.util.element.get_psets(bauteil)
 
         zeile = {
-            "datei": pfad.name,
+            "datei": dateiname,
             "fachmodell": fachmodell,
             "guid": bauteil.GlobalId,
             "klasse": bauteil.is_a(),

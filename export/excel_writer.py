@@ -201,6 +201,31 @@ def schreibe_kostenschaetzung(kosten, bauteile, meldungen_je_schritt, quelldatei
     return None
 
 
+def schreibe_auffaelligkeiten(meldungen_je_schritt, bauteile=None, ziel=None):
+    """Nur die Meldungen als Excel, z.B. fuer den Download nach der Modellpruefung (Schritt 3).
+
+    Mit bauteile werden zu jeder Meldung die Angaben des betroffenen Bauteils (per GUID) ergaenzt,
+    damit man es im Modell findet und korrigieren kann.
+    """
+    meldungen = sammle_meldungen(meldungen_je_schritt)
+    tabelle = _waehle_spalten(meldungen, SPALTEN_MELDUNGEN)
+    if bauteile is not None and len(meldungen):
+        angaben = ["guid", "klasse", "name", "bereich", "bauteilgruppe", "typ_schicht", "element", "datei"]
+        details = meldungen[["guid"]].merge(bauteile[angaben].drop_duplicates("guid"), on="guid", how="left")
+        details = _waehle_spalten(details.drop(columns="guid"), SPALTEN_BAUTEILE)
+        tabelle = pd.concat([tabelle, details], axis=1)
+
+    datei = BytesIO() if ziel is None else ziel
+    with pd.ExcelWriter(datei, engine="openpyxl") as writer:
+        tabelle.to_excel(writer, sheet_name="Auffälligkeiten", index=False)
+        _gestalte_blatt(writer.sheets["Auffälligkeiten"])
+        _faerbe_meldungen(writer.sheets["Auffälligkeiten"])
+
+    if ziel is None:
+        return datei.getvalue()
+    return None
+
+
 if __name__ == "__main__":
     # Test im Terminal: python -m export.excel_writer
     from calculation.costs import berechne_kosten
