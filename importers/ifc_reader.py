@@ -10,7 +10,7 @@ from importers.geometry import ergaenze_mengen
 from importers.sources import ergaenze_felder
 
 # Woher die Werte kommen: neutrales Feld -> (Property-Set, Property-Name).
-# Spaeter ersetzt durch das Blatt «Einstellungen» der eBKP-T-Liste.
+# Standard (GoBau); sobald eine eBKP-T-Liste geladen ist, gilt deren Blatt «Einstellungen».
 EINSTELLUNGEN_STANDARD = {
     "felder": {
         "bereich": ("GoBau_Struktur", "Stufe_4"),
@@ -75,10 +75,20 @@ def lese_hochgeladene_ifc(dateien, einstellungen=EINSTELLUNGEN_STANDARD):
     """Liest IFC-Dateien, die nur im Arbeitsspeicher liegen (z.B. Upload in Streamlit).
 
     Jede Datei braucht .name (Dateiname) und .getvalue() (Inhalt als Bytes).
+    Ist eine Datei kein gueltiges IFC, gibt es einen ValueError mit verstaendlichem Text.
     """
     tabellen = []
     for datei in dateien:
-        modell = ifcopenshell.file.from_string(datei.getvalue().decode("utf-8"))
+        # errors="replace": einzelne falsch codierte Zeichen ersetzen statt abbrechen
+        text = datei.getvalue().decode("utf-8", errors="replace")
+        try:
+            modell = ifcopenshell.file.from_string(text)
+            # from_string meldet kaputte Dateien nicht immer sofort, erst beim ersten Zugriff
+            hat_projekt = len(modell.by_type("IfcProject")) > 0
+        except RuntimeError as fehler:
+            raise ValueError(f"«{datei.name}» ist keine gültige IFC-Datei ({fehler}).") from fehler
+        if not hat_projekt:
+            raise ValueError(f"«{datei.name}» enthält kein IfcProject und ist kein vollständiges IFC-Modell.")
         tabellen.append(_lese_bauteile(modell, datei.name, einstellungen))
     return pd.concat(tabellen, ignore_index=True)
 

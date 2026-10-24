@@ -35,6 +35,9 @@ SPALTEN_ZUORDNUNG = {
     "Bemerkung": "bemerkung",
 }
 
+BLAETTER = ["Positionen", "Zuordnung", "Einstellungen"]
+SPALTEN_EINSTELLUNGEN = ["Feld", "Property-Set", "Property-Name"]
+
 # Mengenart (Text in der Liste) -> Mengenspalte in der Bauteiltabelle
 MENGENARTEN = {
     "stück": "anzahl",
@@ -116,6 +119,10 @@ def lese_einstellungen(pfad):
     """
     tabelle = pd.read_excel(pfad, sheet_name="Einstellungen", header=KOPFZEILE)
     tabelle.columns = [_bereinige(str(spalte)) for spalte in tabelle.columns]
+    fehlend = [s for s in SPALTEN_EINSTELLUNGEN if s not in tabelle.columns]
+    if fehlend:
+        raise ValueError(f"Im Blatt «Einstellungen» fehlen die Spalten: {', '.join(fehlend)} "
+                         "(Spaltenköpfe müssen in Zeile 4 stehen).")
 
     einstellungen = {"felder": {}, "mengen": {}}
     for _, zeile in tabelle.iterrows():
@@ -128,7 +135,18 @@ def lese_einstellungen(pfad):
 
 
 def lese_ebkp_liste(pfad):
-    """Liest alle drei Blaetter und gibt (positionen, zuordnung, einstellungen) zurueck."""
+    """Liest alle drei Blaetter und gibt (positionen, zuordnung, einstellungen) zurueck.
+
+    Ist die Datei kein Excel oder fehlt ein Blatt, gibt es einen ValueError mit verstaendlichem Text.
+    Fehlende Spalten in Positionen/Zuordnung meldet dagegen list_checks (als Pruefmeldung).
+    """
+    try:
+        vorhanden = pd.ExcelFile(pfad).sheet_names
+    except Exception as fehler:      # z.B. umbenannte Textdatei oder altes .xls
+        raise ValueError("Die eBKP-T-Liste ist keine lesbare Excel-Datei (.xlsx).") from fehler
+    fehlend = [blatt for blatt in BLAETTER if blatt not in vorhanden]
+    if fehlend:
+        raise ValueError(f"In der eBKP-T-Liste fehlen die Blätter: {', '.join(fehlend)}.")
     return lese_positionen(pfad), lese_zuordnung(pfad), lese_einstellungen(pfad)
 
 

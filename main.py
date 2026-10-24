@@ -62,7 +62,11 @@ einstellungen = st.session_state.get("einstellungen", EINSTELLUNGEN_STANDARD)
 schluessel = (signatur(ifc_dateien), str(einstellungen))
 if st.session_state.get("ifc_schluessel") != schluessel:
     with st.spinner("IFC-Dateien werden gelesen …"):
-        bauteile = lese_hochgeladene_ifc(ifc_dateien, einstellungen)
+        try:
+            bauteile = lese_hochgeladene_ifc(ifc_dateien, einstellungen)
+        except ValueError as fehler:
+            st.error(str(fehler))
+            st.stop()
         st.session_state["bauteile"] = bauteile
         st.session_state["modell_meldungen"] = pruefe_modell(bauteile)
         st.session_state["ifc_schluessel"] = schluessel
@@ -98,7 +102,11 @@ if liste_datei is None:
     st.info("Bitte die eBKP-T-Liste hochladen.")
     st.stop()
 
-positionen, zuordnung, liste_einstellungen = lese_ebkp_liste(BytesIO(liste_datei.getvalue()))
+try:
+    positionen, zuordnung, liste_einstellungen = lese_ebkp_liste(BytesIO(liste_datei.getvalue()))
+except ValueError as fehler:
+    st.error(str(fehler))
+    st.stop()
 liste_meldungen = pruefe_liste(positionen, zuordnung, liste_einstellungen)
 st.write(f"{len(positionen)} Positionen, {len(zuordnung)} Regeln")
 zeige_meldungen(liste_meldungen, "Listenprüfung")
