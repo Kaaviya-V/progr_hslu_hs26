@@ -6,6 +6,8 @@ import ifcopenshell
 import ifcopenshell.util.element
 import pandas as pd
 
+from importers.sources import ergaenze_felder
+
 # Woher die Werte kommen: neutrales Feld -> (Property-Set, Property-Name).
 # Spaeter ersetzt durch das Blatt «Einstellungen» der eBKP-T-Liste.
 EINSTELLUNGEN_STANDARD = {
@@ -119,7 +121,8 @@ def _lese_bauteile(modell, dateiname, einstellungen):
     spalten = ["datei", "fachmodell", "guid", "klasse", "name"]
     spalten += list(einstellungen["felder"]) + list(einstellungen["mengen"])
     spalten += ["mengenquelle"] + HIERARCHIE_SPALTEN + ["begrenzungsbox"]
-    return pd.DataFrame(zeilen, columns=spalten)
+    # Fehlende Felder (z.B. ohne GoBau) aus der IFC-Hierarchie ergaenzen
+    return ergaenze_felder(pd.DataFrame(zeilen, columns=spalten))
 
 
 def lese_mehrere_ifc(pfade, einstellungen=EINSTELLUNGEN_STANDARD):

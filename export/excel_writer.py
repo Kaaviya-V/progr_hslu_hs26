@@ -51,6 +51,7 @@ SPALTEN_BAUTEILE = {
     "menge": "Menge",
     "einheit": "Einheit",
     "mengenquelle": "Mengenquelle",
+    "ersatzfelder": "Aus Ersatzquelle",
     "einheitspreis": "Einheitspreis (CHF)",
     "kosten": "Kosten (CHF)",
 }
