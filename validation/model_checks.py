@@ -68,6 +68,15 @@ def pruefe_mengen(bauteile):
     return meldungen
 
 
+def pruefe_mengenquelle(bauteile):
+    """Hinweis fuer Mengen, die nur aus der Geometrie stammen (Naeherung, bitte pruefen)."""
+    meldungen = []
+    for _, bauteil in bauteile[bauteile["mengenquelle"] == "Geometrie"].iterrows():
+        text = f"{bauteil['klasse']} «{bauteil['name']}»: Mengen aus der Geometrie berechnet (Näherung)"
+        meldungen.append(_meldung(HINWEIS, "Mengenquelle", bauteil, text))
+    return meldungen
+
+
 def pruefe_doppelte_guid(bauteile):
     """Meldet GUIDs, die mehr als einmal vorkommen (Fehler)."""
     meldungen = []
@@ -107,6 +116,7 @@ def pruefe_modell(bauteile):
     meldungen = []
     meldungen += pruefe_pflichtangaben(bauteile)
     meldungen += pruefe_mengen(bauteile)
+    meldungen += pruefe_mengenquelle(bauteile)
     meldungen += pruefe_doppelte_guid(bauteile)
     meldungen += pruefe_gleiche_bauteile(bauteile)
     return pd.DataFrame(meldungen, columns=MELDUNG_SPALTEN)

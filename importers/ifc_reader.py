@@ -6,6 +6,7 @@ import ifcopenshell
 import ifcopenshell.util.element
 import pandas as pd
 
+from importers.geometry import ergaenze_mengen
 from importers.sources import ergaenze_felder
 
 # Woher die Werte kommen: neutrales Feld -> (Property-Set, Property-Name).
@@ -121,8 +122,10 @@ def _lese_bauteile(modell, dateiname, einstellungen):
     spalten = ["datei", "fachmodell", "guid", "klasse", "name"]
     spalten += list(einstellungen["felder"]) + list(einstellungen["mengen"])
     spalten += ["mengenquelle"] + HIERARCHIE_SPALTEN + ["begrenzungsbox"]
-    # Fehlende Felder (z.B. ohne GoBau) aus der IFC-Hierarchie ergaenzen
-    return ergaenze_felder(pd.DataFrame(zeilen, columns=spalten))
+    # Fehlende Felder (z.B. ohne GoBau) aus der IFC-Hierarchie ergaenzen,
+    # fehlende Mengen aus der Geometrie (nur Bauteile ohne Mengenquelle, sonst keine Wartezeit)
+    bauteile = ergaenze_felder(pd.DataFrame(zeilen, columns=spalten))
+    return ergaenze_mengen(bauteile, modell)
 
 
 def lese_mehrere_ifc(pfade, einstellungen=EINSTELLUNGEN_STANDARD):
