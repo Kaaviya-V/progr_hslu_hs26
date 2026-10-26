@@ -1,18 +1,20 @@
-"""Diagramme: Kosten je Gruppe als waagrechtes Balkendiagramm (Matplotlib).
+"""Diagramme: Kosten je Gruppe als waagrechtes Balkendiagramm (Plotly).
 
 Gestaltung: eine Farbe (nur eine Datenreihe, darum keine Legende), Balken nach Kosten
-sortiert (groesste oben), Betrag und Anteil direkt am Balkenende, Raster und Achsen zurueckhaltend.
-Waagrechte Balken, weil die Gruppennamen lang sind und so lesbar bleiben.
+sortiert (groesste oben), «Betrag (Anteil)» direkt am Balkenende, transparenter Hintergrund
+(passt sich dem dunklen Streamlit-Theme an). Plotly zeigt beim Darueberfahren zusaetzlich
+einen Tooltip mit Gruppe, Betrag und Anteil.
+
+Version 1 mit Matplotlib: visualization/Z_charts_v1.py
 """
 
-from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
+import plotly.graph_objects as go
 
-BALKEN_FARBE = "#2a78d6"
-HINTERGRUND = "#fcfcfb"
-TEXT = "#0b0b0b"
-TEXT_LEISE = "#52514e"
-RASTER = "#e4e3df"
+BALKEN_FARBE = "#3987e5"     # Blau, fuer dunklen Hintergrund geeignet
+TEXT = "#E8EEF0"             # wie textColor im Theme
+TEXT_LEISE = "#9AA8AD"
+RASTER = "rgba(232, 238, 240, 0.08)"
+HOEHE = 500
 
 
 def chf(betrag):
@@ -29,49 +31,45 @@ def kosten_je_gruppe(kosten):
 
 
 def diagramm_kosten_je_gruppe(kosten):
-    """Zeichnet das Balkendiagramm und gibt die Matplotlib-Figur zurueck."""
+    """Zeichnet das Balkendiagramm und gibt die Plotly-Figur zurueck."""
     summen = kosten_je_gruppe(kosten)
     total = summen.sum()
+    anteile = summen / total
+    beschriftung = [f"{chf(wert)} ({'<1%' if anteil < 0.005 else f'{anteil:.0%}'})"
+                    for wert, anteil in zip(summen, anteile)]
 
-    hoehe = 0.9 + 0.32 * len(summen)          # Figur waechst mit der Anzahl Gruppen
-    # Figure direkt statt plt.subplots: Matplotlib merkt sich die Figur nicht, so fuellt
-    # sich der Speicher nicht, wenn Streamlit das Skript bei jedem Klick neu ausfuehrt
-    fig = Figure(figsize=(9, hoehe), facecolor=HINTERGRUND)
-    ax = fig.subplots()
-    ax.set_facecolor(HINTERGRUND)
-
-    # Groesste Gruppe oben: barh zeichnet von unten nach oben, darum umdrehen
-    gruppen = summen.index[::-1]
-    werte = summen.values[::-1]
-    ax.barh(gruppen, werte, height=0.62, color=BALKEN_FARBE)
-
-    # Betrag und Anteil direkt am Balkenende (Text in Textfarbe, nicht in Balkenfarbe)
-    for y, wert in enumerate(werte):
-        anteil = wert / total
-        anteil_text = "<1%" if anteil < 0.005 else f"{anteil:.0%}"
-        ax.text(wert + total * 0.002, y, f"{chf(wert)}  ({anteil_text})",
-                va="center", fontsize=8.5, color=TEXT_LEISE)
-
-    # Zurueckhaltende Achsen: nur senkrechte Rasterlinien, keine Rahmenlinien
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x / 1000:.0f}k"))
-    ax.grid(axis="x", color=RASTER, linewidth=0.8)
-    ax.set_axisbelow(True)
-    for seite in ["top", "right", "left", "bottom"]:
-        ax.spines[seite].set_visible(False)
-    ax.tick_params(axis="both", length=0, labelsize=9, colors=TEXT_LEISE)
-    ax.tick_params(axis="y", colors=TEXT)
-    ax.set_xlim(0, summen.max() * 1.22)      # Platz fuer die Beschriftung rechts
-    ax.margins(y=0.01)
-
-    ax.set_title(f"Kosten je Gruppe – Total CHF {chf(total)} exkl. MwSt.",
-                 loc="left", fontsize=11, color=TEXT, pad=10)
-    ax.set_xlabel("CHF", fontsize=9, color=TEXT_LEISE, loc="right")
-    fig.tight_layout()
+    fig = go.Figure(go.Bar(
+        x=summen.values,
+        y=summen.index,
+        orientation="h",
+        marker_color=BALKEN_FARBE,
+        text=beschriftung,
+        textposition="outside",
+        textfont=dict(color=TEXT_LEISE, size=12),
+        cliponaxis=False,                      # Beschriftung darf ueber den Rand hinaus
+        customdata=anteile.values,
+        hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<br>%{customdata:.1%} vom Total<extra></extra>",
+    ))
+    fig.update_layout(
+        height=HOEHE,
+        margin=dict(l=10, r=10, t=40, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",         # transparent
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=TEXT),
+        title=dict(text=f"Kosten je Gruppe – Total CHF {chf(total)} exkl. MwSt.", x=0, font=dict(size=15)),
+        bargap=0.35,
+        separators=".'",                       # Dezimalpunkt und Apostroph als Tausendertrenner
+        hoverlabel=dict(bgcolor="#162024", font_color=TEXT),
+    )
+    # Groesste Gruppe oben; rechts 25 % Platz fuer die Beschriftung
+    fig.update_yaxes(autorange="reversed", showgrid=False, ticks="", ticklabelstandoff=8)
+    fig.update_xaxes(range=[0, summen.max() * 1.25], gridcolor=RASTER, zeroline=False,
+                     tickfont=dict(color=TEXT_LEISE), ticksuffix="", tickformat="~s")
     return fig
 
 
 if __name__ == "__main__":
-    # Test im Terminal: python -m visualization.charts  -> speichert daten/diagramm_test.png
+    # Test im Terminal: python -m visualization.charts  -> speichert daten/diagramm_test.html
     from calculation.costs import berechne_kosten
     from calculation.mapping import ordne_zu
     from importers.ebkp_reader import lese_ebkp_liste
@@ -84,5 +82,5 @@ if __name__ == "__main__":
     summen = kosten_je_gruppe(kosten)
     print(summen.round(2).to_string())
     print("Summe der Gruppen:", chf(summen.sum()), "(Soll: 896'542)")
-    diagramm_kosten_je_gruppe(kosten).savefig("daten/diagramm_test.png", dpi=130)
-    print("Gespeichert: daten/diagramm_test.png")
+    diagramm_kosten_je_gruppe(kosten).write_html("daten/diagramm_test.html")
+    print("Gespeichert: daten/diagramm_test.html")

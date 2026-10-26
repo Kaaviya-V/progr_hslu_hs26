@@ -1,13 +1,16 @@
-"""KOSTRA – Weboberflaeche (Streamlit).
+"""KOSTRA – Weboberflaeche Version 2 (Streamlit).
 
 Start im Terminal: streamlit run main.py
+Version 1 (eingefroren): Z_main_v1.py
 
-Streamlit fuehrt dieses Skript bei JEDER Bedienung (Upload, Klick) von oben nach unten neu aus.
-Was teuer ist (IFC lesen), wird deshalb im Session State gespeichert und nur neu berechnet,
-wenn sich die hochgeladenen Dateien oder die Einstellungen aendern.
-st.stop() beendet den Durchlauf: So werden spaetere Schritte gesperrt, solange Fehler bestehen.
+Aufbau:
+1. Rechnen: alle Schritte nacheinander; ein Fehler sperrt die folgenden Schritte.
+   Teure Ergebnisse bleiben im Session State und werden nur neu berechnet, wenn sich
+   die hochgeladenen Dateien aendern (Filter und Tab-Wechsel bleiben so schnell).
+2. Seitenleiste: Uploads und die 7 Schritte mit Status ✓ / ⚠ / ✗.
+3. Hauptbereich: 5 Kennzahlen, darunter Tabs Pruefung, Kosten, Bauteile, Diagramm, Export.
 
-Hier steht keine Fachlogik, nur Anzeige und Aufrufe der Module.
+Hier steht keine Fachlogik, nur Ablauf, Anzeige und Aufrufe der Module.
 """
 
 from io import BytesIO
@@ -16,172 +19,232 @@ import streamlit as st
 
 from calculation.costs import berechne_kosten, berechne_total
 from calculation.mapping import ordne_zu
-from export.excel_writer import schreibe_auffaelligkeiten, schreibe_kostenschaetzung
+from export.excel_writer import sammle_meldungen, schreibe_auffaelligkeiten, schreibe_kostenschaetzung
 from export.ifc_writer import oeffne_hochgeladene_ifc, schreibe_gesamtmodell
 from importers.ebkp_reader import lese_ebkp_liste
 from importers.ifc_reader import EINSTELLUNGEN_STANDARD, lese_hochgeladene_ifc
 from validation.list_checks import pruefe_liste
 from validation.model_checks import FEHLER, hat_fehler, pruefe_modell
-from visualization.charts import diagramm_kosten_je_gruppe
+from visualization.charts import chf, diagramm_kosten_je_gruppe
+from visualization.tabellen import (
+    FEHLT, KOSTEN_SPALTEN, OFFEN, OK, anzahl_text, bauteile_tabelle, kosten_tabelle,
+    meldungen_tabelle, status,
+)
 
 EXCEL_TYP = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+SCHRITTE = ["IFC einlesen", "Modell prüfen", "Entscheid", "eBKP-T-Liste prüfen",
+            "Zuordnen", "Berechnen", "Exportieren"]
 
-st.set_page_config(page_title="KOSTRA", layout="wide")
-st.title("KOSTRA – vom Modell zur Kostenschätzung")
-
-
-def zeige_meldungen(meldungen, titel):
-    """Zeigt die Anzahl Fehler/Hinweise und die Meldungen in einer aufklappbaren Tabelle."""
-    fehler = (meldungen["schwere"] == FEHLER).sum()
-    hinweise = len(meldungen) - fehler
-    if fehler:
-        st.error(f"{titel}: {fehler} Fehler, {hinweise} Hinweise")
-    elif hinweise:
-        st.warning(f"{titel}: keine Fehler, {hinweise} Hinweise")
-    else:
-        st.success(f"{titel}: keine Meldungen")
-    if len(meldungen):
-        with st.expander("Meldungen anzeigen", expanded=bool(fehler)):
-            st.dataframe(meldungen.dropna(axis=1, how="all"), hide_index=True, width="stretch")
+st.set_page_config(layout="wide", page_title="KOSTRA")
+zustand = st.session_state
 
 
 def signatur(dateien):
-    """Erkennungsmerkmal der hochgeladenen Dateien (Name und Groesse), um Aenderungen zu bemerken."""
-    return tuple((datei.name, datei.size) for datei in dateien)
+    """Erkennungsmerkmal hochgeladener Dateien (Name und Groesse), um Aenderungen zu bemerken."""
+    if dateien is None:
+        return None
+    if not isinstance(dateien, list):
+        dateien = [dateien]
+    return tuple((d.name, d.size) for d in dateien)
 
 
-# ---------------------------------------------------------------- 1 IFC einlesen
-st.header("1 · IFC-Modelle einlesen")
-ifc_dateien = st.file_uploader("IFC-Dateien (Fachmodelle)", type="ifc", accept_multiple_files=True)
-if not ifc_dateien:
-    st.info("Bitte eine oder mehrere IFC-Dateien hochladen.")
-    st.stop()
+# ================================================================== Seitenleiste: Uploads
+with st.sidebar:
+    st.title("KOSTRA")
+    st.caption("vom Modell zur Kostenschätzung")
+    ifc_dateien = st.file_uploader("IFC-Modelle", type="ifc", accept_multiple_files=True)
+    liste_datei = st.file_uploader("eBKP-T-Liste", type="xlsx")
+    st.divider()
+    schritte_platz = st.container()     # wird unten gefuellt, wenn alle Ergebnisse bekannt sind
 
-# Einstellungen kommen aus der eBKP-T-Liste (Schritt 4); bis dahin gilt der Standard (GoBau)
-einstellungen = st.session_state.get("einstellungen", EINSTELLUNGEN_STANDARD)
-schluessel = (signatur(ifc_dateien), str(einstellungen))
-if st.session_state.get("ifc_schluessel") != schluessel:
-    with st.spinner("IFC-Dateien werden gelesen …"):
+# ================================================================== 1 Rechnen
+schritt = {name: (OFFEN, "") for name in SCHRITTE}   # Name -> (Symbol, kurzer Text)
+lesefehler = []
+meldungen_je_schritt = {}
+bauteile = positionen = zuordnung = kosten = bauteilkosten = None
+
+# --- 1 IFC einlesen (nur neu, wenn Dateien oder Einstellungen aendern)
+if ifc_dateien:
+    einstellungen = zustand.get("einstellungen", EINSTELLUNGEN_STANDARD)
+    ifc_schluessel = (signatur(ifc_dateien), str(einstellungen))
+    if zustand.get("ifc_schluessel") != ifc_schluessel:
+        zustand["ifc_schluessel"] = ifc_schluessel
         try:
-            bauteile = lese_hochgeladene_ifc(ifc_dateien, einstellungen)
+            with st.spinner("IFC-Dateien werden gelesen …"):
+                zustand["bauteile"] = lese_hochgeladene_ifc(ifc_dateien, einstellungen)
+            zustand["modell_meldungen"] = pruefe_modell(zustand["bauteile"])
+            zustand["ifc_fehler"] = None
         except ValueError as fehler:
-            st.error(str(fehler))
-            st.stop()
-        st.session_state["bauteile"] = bauteile
-        st.session_state["modell_meldungen"] = pruefe_modell(bauteile)
-        st.session_state["ifc_schluessel"] = schluessel
+            zustand["bauteile"] = zustand["modell_meldungen"] = None
+            zustand["ifc_fehler"] = str(fehler)
 
-bauteile = st.session_state["bauteile"]
-modell_meldungen = st.session_state["modell_meldungen"]
+    bauteile = zustand["bauteile"]
+    if zustand["ifc_fehler"]:
+        lesefehler.append(zustand["ifc_fehler"])
+        schritt["IFC einlesen"] = (FEHLT, "Datei nicht lesbar")
+    else:
+        schritt["IFC einlesen"] = (OK, f"{len(bauteile)} Bauteile")
 
-spalte1, spalte2 = st.columns([1, 3])
-spalte1.metric("Bauteile", len(bauteile))
-spalte2.dataframe(
-    bauteile.groupby("fachmodell").size().rename("Bauteile").to_frame().T,
-    width="stretch",
-)
-
-# ---------------------------------------------------------------- 2 + 3 Modell pruefen, Entscheid
-st.header("2 · Modell prüfen")
-zeige_meldungen(modell_meldungen, "Modellprüfung")
-if len(modell_meldungen):
-    st.download_button(
-        "Betroffene Bauteile als Excel herunterladen",
-        schreibe_auffaelligkeiten({"Modellprüfung": modell_meldungen}, bauteile),
-        file_name="KOSTRA_Modellpruefung.xlsx",
-        mime=EXCEL_TYP,
-    )
-if hat_fehler(modell_meldungen):
-    st.error("Das Modell hat Fehler. Bitte im Modell korrigieren und die IFC-Dateien neu hochladen.")
-    st.stop()
-
-# ---------------------------------------------------------------- 4 eBKP-T-Liste
-st.header("3 · eBKP-T-Liste laden und prüfen")
-liste_datei = st.file_uploader("eBKP-T-Liste (Excel)", type="xlsx")
-if liste_datei is None:
-    st.info("Bitte die eBKP-T-Liste hochladen.")
-    st.stop()
-
-try:
-    positionen, zuordnung, liste_einstellungen = lese_ebkp_liste(BytesIO(liste_datei.getvalue()))
-except ValueError as fehler:
-    st.error(str(fehler))
-    st.stop()
-liste_meldungen = pruefe_liste(positionen, zuordnung, liste_einstellungen)
-st.write(f"{len(positionen)} Positionen, {len(zuordnung)} Regeln")
-zeige_meldungen(liste_meldungen, "Listenprüfung")
-if hat_fehler(liste_meldungen):
-    st.error("Die Liste hat Fehler. Bitte in Excel korrigieren und neu hochladen.")
-    st.stop()
-
-# Liste gibt andere Einstellungen vor als beim Einlesen -> IFC damit nochmals lesen (Neustart des Skripts)
-if liste_einstellungen != einstellungen:
-    st.session_state["einstellungen"] = liste_einstellungen
-    st.rerun()
-
-# ---------------------------------------------------------------- 5 Zuordnen
-st.header("4 · Zuordnen")
-zugeordnet, zuordnungs_meldungen = ordne_zu(bauteile, zuordnung, positionen)
-st.write(f"{zugeordnet['pos_id'].notna().sum()} von {len(zugeordnet)} Bauteilen genau einer Position zugeordnet")
-zeige_meldungen(zuordnungs_meldungen, "Zuordnung")
-if hat_fehler(zuordnungs_meldungen):
-    st.error("Es gibt Konflikte (Bauteile mit mehreren Positionen). Bitte die Regeln im Blatt «Zuordnung» anpassen.")
-    st.stop()
-
-# ---------------------------------------------------------------- 6 Berechnen
-st.header("5 · Kosten")
-kosten, bauteilkosten, mengen_meldungen = berechne_kosten(zugeordnet, positionen)
-total = f"{berechne_total(kosten):,.2f}".replace(",", "'")
-st.metric("Total exkl. MwSt.", f"CHF {total}")
-zeige_meldungen(mengen_meldungen, "Berechnung")
-st.dataframe(
-    kosten.drop(columns=["ebkp_code"]),
-    hide_index=True,
-    width="stretch",
-    column_config={
-        "menge": st.column_config.NumberColumn("Menge", format="%.3f"),
-        "einheitspreis": st.column_config.NumberColumn("Einheitspreis (CHF)", format="%.2f"),
-        "kosten": st.column_config.NumberColumn("Kosten (CHF)", format="%.2f"),
-        "anteil": st.column_config.ProgressColumn("Anteil", format="percent", min_value=0, max_value=1),
-    },
-)
-
-st.pyplot(diagramm_kosten_je_gruppe(kosten))
-
-# ---------------------------------------------------------------- 7 Exportieren
-st.header("6 · Exportieren")
-alle_meldungen = {
-    "Modellprüfung": modell_meldungen,
-    "Listenprüfung": liste_meldungen,
-    "Zuordnung": zuordnungs_meldungen,
-    "Berechnung": mengen_meldungen,
-}
-st.download_button(
-    "Kostenschätzung als Excel herunterladen",
-    schreibe_kostenschaetzung(
-        kosten, bauteilkosten, alle_meldungen, [d.name for d in ifc_dateien], liste_datei.name
-    ),
-    file_name="KOSTRA_Kostenschaetzung.xlsx",
-    mime=EXCEL_TYP,
-    type="primary",
-)
-
-# Gesamtmodell: dauert einige Sekunden und gibt eine grosse Datei, darum erst auf Knopfdruck.
-# Das Ergebnis bleibt im Session State, solange IFC-Dateien und Liste gleich bleiben.
-st.subheader("IFC-Gesamtmodell")
-st.caption("Alle Fachmodelle in einer Datei, jedes Bauteil mit Pset_KOSTRA (Pos-ID, Menge, Kosten, Status).")
-gesamt_schluessel = (st.session_state["ifc_schluessel"], liste_datei.name, liste_datei.size)
-gespeichert = st.session_state.get("gesamtmodell")
-if gespeichert is None or gespeichert[0] != gesamt_schluessel:
-    if st.button("Gesamtmodell erstellen"):
-        with st.spinner("Gesamtmodell wird erstellt …"):
-            inhalt = schreibe_gesamtmodell(oeffne_hochgeladene_ifc(ifc_dateien), bauteilkosten, positionen)
-        st.session_state["gesamtmodell"] = (gesamt_schluessel, inhalt)
-        st.rerun()
+# --- 2 Modell pruefen, 3 Entscheid
+if bauteile is not None:
+    meldungen_je_schritt["Modellprüfung"] = zustand["modell_meldungen"]
+    schritt["Modell prüfen"] = (status(zustand["modell_meldungen"]), anzahl_text(zustand["modell_meldungen"]))
+    modell_gesperrt = hat_fehler(zustand["modell_meldungen"])
+    schritt["Entscheid"] = (FEHLT, "gesperrt – Modell korrigieren") if modell_gesperrt else (OK, "freigegeben")
 else:
-    st.download_button(
-        f"Gesamtmodell herunterladen ({len(gespeichert[1]) / 1e6:.0f} MB)",
-        gespeichert[1],
-        file_name="KOSTRA_Gesamtmodell.ifc",
-        mime="application/x-step",
-    )
+    modell_gesperrt = True
+
+# --- 4 Liste lesen und pruefen, 5 Zuordnen, 6 Berechnen (nur neu, wenn IFC oder Liste aendern)
+if liste_datei is not None and not modell_gesperrt:
+    rechen_schluessel = (zustand["ifc_schluessel"], signatur(liste_datei))
+    if zustand.get("rechen_schluessel") != rechen_schluessel:
+        zustand["rechen_schluessel"] = rechen_schluessel
+        ergebnis = {"liste_fehler": None}
+        try:
+            positionen, zuordnung, liste_einstellungen = lese_ebkp_liste(BytesIO(liste_datei.getvalue()))
+            ergebnis.update(positionen=positionen, zuordnung=zuordnung,
+                            liste_meldungen=pruefe_liste(positionen, zuordnung, liste_einstellungen))
+            if not hat_fehler(ergebnis["liste_meldungen"]):
+                # Liste gibt andere Einstellungen vor -> IFC damit nochmals lesen (Neustart)
+                if liste_einstellungen != zustand.get("einstellungen", EINSTELLUNGEN_STANDARD):
+                    zustand["einstellungen"] = liste_einstellungen
+                    del zustand["rechen_schluessel"]
+                    st.rerun()
+                zugeordnet, ergebnis["zuordnungs_meldungen"] = ordne_zu(bauteile, zuordnung, positionen)
+                ergebnis["zugeordnet"] = zugeordnet
+                if not hat_fehler(ergebnis["zuordnungs_meldungen"]):
+                    (ergebnis["kosten"], ergebnis["bauteilkosten"],
+                     ergebnis["mengen_meldungen"]) = berechne_kosten(zugeordnet, positionen)
+        except ValueError as fehler:
+            ergebnis["liste_fehler"] = str(fehler)
+        zustand["ergebnis"] = ergebnis
+
+    ergebnis = zustand["ergebnis"]
+    if ergebnis["liste_fehler"]:
+        lesefehler.append(ergebnis["liste_fehler"])
+        schritt["eBKP-T-Liste prüfen"] = (FEHLT, "Datei nicht lesbar")
+    else:
+        positionen, zuordnung = ergebnis["positionen"], ergebnis["zuordnung"]
+        for name, schluessel, titel in [("eBKP-T-Liste prüfen", "liste_meldungen", "Listenprüfung"),
+                                        ("Zuordnen", "zuordnungs_meldungen", "Zuordnung"),
+                                        ("Berechnen", "mengen_meldungen", "Berechnung")]:
+            if schluessel in ergebnis:
+                meldungen_je_schritt[titel] = ergebnis[schluessel]
+                schritt[name] = (status(ergebnis[schluessel]), anzahl_text(ergebnis[schluessel]))
+        bauteile = ergebnis.get("bauteilkosten", ergebnis.get("zugeordnet", bauteile))
+        kosten, bauteilkosten = ergebnis.get("kosten"), ergebnis.get("bauteilkosten")
+        if kosten is not None:
+            schritt["Exportieren"] = (OK, "bereit")
+
+# ================================================================== 2 Seitenleiste: Schritte
+with schritte_platz:
+    for nummer, name in enumerate(SCHRITTE, start=1):
+        symbol, text = schritt[name]
+        st.markdown(f"{symbol} &nbsp; **{nummer} {name}**  \n"
+                    f"<span style='opacity:0.6;font-size:0.85em'>{text}</span>", unsafe_allow_html=True)
+
+# ================================================================== 3 Hauptbereich
+for text in lesefehler:
+    st.error(text)
+if not ifc_dateien:
+    st.info("Links die IFC-Modelle und die eBKP-T-Liste hochladen.")
+    st.stop()
+
+# --- Kennzahlen
+alle_meldungen = sammle_meldungen(meldungen_je_schritt)
+anzahl_fehler = int((alle_meldungen["schwere"] == FEHLER).sum())
+anzahl_hinweise = len(alle_meldungen) - anzahl_fehler
+
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("Bauteile", len(bauteile) if bauteile is not None else "–", border=True)
+if positionen is not None:
+    k2.metric("Positionen", len(positionen), delta=f"{len(zuordnung)} Regeln",
+              delta_color="off", delta_arrow="off", border=True)
+else:
+    k2.metric("Positionen", "–", border=True)
+if bauteile is not None and "pos_id" in bauteile.columns:
+    k3.metric("Zuordnung", f"{bauteile['pos_id'].notna().mean():.0%}", border=True)
+else:
+    k3.metric("Zuordnung", "–", border=True)
+k4.metric("Meldungen", f"{anzahl_fehler} / {anzahl_hinweise}", help="Fehler / Hinweise", border=True)
+k5.metric("Total CHF", chf(berechne_total(kosten)) if kosten is not None else "–",
+          help="exkl. MwSt.", border=True)
+
+NOCH_NICHT = "Erst verfügbar, wenn IFC-Modelle und eBKP-T-Liste ohne Fehler geprüft und zugeordnet sind."
+tab_pruefung, tab_kosten, tab_bauteile, tab_diagramm, tab_export = st.tabs(
+    ["Prüfung", "Kosten je Position", "Bauteile", "Diagramm", "Export"])
+
+# --- Tab Pruefung: je Pruefung eine kompakte Kachel, darunter alle Meldungen
+with tab_pruefung:
+    kacheln = st.columns(4)
+    for spalte, titel in zip(kacheln, ["Modellprüfung", "Listenprüfung", "Zuordnung", "Berechnung"]):
+        tabelle = meldungen_je_schritt.get(titel)
+        with spalte.container(border=True):
+            st.markdown(f"**{status(tabelle)} {titel}**  \n"
+                        f"<span style='opacity:0.6'>{anzahl_text(tabelle)}</span>", unsafe_allow_html=True)
+
+    if len(alle_meldungen):
+        st.dataframe(meldungen_tabelle(alle_meldungen), hide_index=True, width="stretch",
+                     column_config={"Meldung": st.column_config.TextColumn(width="large")})
+        st.download_button("Betroffene Bauteile als Excel",
+                           schreibe_auffaelligkeiten(meldungen_je_schritt, zustand.get("bauteile")),
+                           file_name="KOSTRA_Auffaelligkeiten.xlsx", mime=EXCEL_TYP)
+    else:
+        st.caption("Keine Hinweise oder Fehler.")
+
+# --- Tab Kosten je Position: Filter Gruppe, Suche, sortiert nach Kosten
+with tab_kosten:
+    if kosten is None:
+        st.info(NOCH_NICHT)
+    else:
+        filter1, filter2 = st.columns([1, 2])
+        gruppe = filter1.selectbox("Gruppe", ["Alle"] + sorted(kosten["gruppe"].dropna().unique()))
+        suche = filter2.text_input("Suche", placeholder="Pos-ID oder Bezeichnung")
+        st.dataframe(kosten_tabelle(kosten, None if gruppe == "Alle" else gruppe, suche),
+                     column_config=KOSTEN_SPALTEN, hide_index=True, width="stretch", height=600)
+
+# --- Tab Bauteile
+with tab_bauteile:
+    if bauteile is None:
+        st.info("Erst verfügbar, wenn die IFC-Modelle gelesen sind.")
+    else:
+        st.dataframe(bauteile_tabelle(bauteile), hide_index=True, width="stretch", height=600)
+
+# --- Tab Diagramm
+with tab_diagramm:
+    if kosten is None:
+        st.info(NOCH_NICHT)
+    else:
+        st.plotly_chart(diagramm_kosten_je_gruppe(kosten), theme=None, width="stretch")
+
+# --- Tab Export: zwei Kacheln
+with tab_export:
+    if kosten is None:
+        st.info(NOCH_NICHT)
+    else:
+        excel_kachel, ifc_kachel = st.columns(2)
+
+        with excel_kachel.container(border=True):
+            st.markdown("**Kostenschätzung (Excel)**")
+            st.caption("Zusammenfassung, Kosten je Position, Bauteilliste, Auffälligkeiten")
+            if zustand.get("excel_schluessel") != zustand["rechen_schluessel"]:
+                zustand["excel"] = schreibe_kostenschaetzung(
+                    kosten, bauteilkosten, meldungen_je_schritt, [d.name for d in ifc_dateien], liste_datei.name)
+                zustand["excel_schluessel"] = zustand["rechen_schluessel"]
+            st.download_button("Excel herunterladen", zustand["excel"], file_name="KOSTRA_Kostenschaetzung.xlsx",
+                               mime=EXCEL_TYP, type="primary", width="stretch")
+
+        # Gesamtmodell erst auf Knopfdruck (einige Sekunden, grosse Datei)
+        with ifc_kachel.container(border=True):
+            st.markdown("**Gesamtmodell (IFC)**")
+            st.caption("Alle Fachmodelle in einer Datei, jedes Bauteil mit Pset_KOSTRA")
+            gespeichert = zustand.get("gesamtmodell")
+            if gespeichert is None or gespeichert[0] != zustand["rechen_schluessel"]:
+                if st.button("Gesamtmodell erstellen", width="stretch"):
+                    with st.spinner("Gesamtmodell wird erstellt …"):
+                        inhalt = schreibe_gesamtmodell(oeffne_hochgeladene_ifc(ifc_dateien), bauteilkosten, positionen)
+                    zustand["gesamtmodell"] = (zustand["rechen_schluessel"], inhalt)
+                    st.rerun()
+            else:
+                st.download_button(f"IFC herunterladen ({len(gespeichert[1]) / 1e6:.0f} MB)", gespeichert[1],
+                                   file_name="KOSTRA_Gesamtmodell.ifc", mime="application/x-step", width="stretch")

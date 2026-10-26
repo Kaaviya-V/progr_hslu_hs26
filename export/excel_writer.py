@@ -210,7 +210,8 @@ def schreibe_auffaelligkeiten(meldungen_je_schritt, bauteile=None, ziel=None):
     """
     meldungen = sammle_meldungen(meldungen_je_schritt)
     tabelle = _waehle_spalten(meldungen, SPALTEN_MELDUNGEN)
-    if bauteile is not None and len(meldungen):
+    # Nur Meldungen mit GUID betreffen ein Bauteil (Listenpruefung hat keine GUID-Spalte)
+    if bauteile is not None and "guid" in meldungen.columns and meldungen["guid"].notna().any():
         angaben = ["guid", "klasse", "name", "bereich", "bauteilgruppe", "typ_schicht", "element", "datei"]
         details = meldungen[["guid"]].merge(bauteile[angaben].drop_duplicates("guid"), on="guid", how="left")
         details = _waehle_spalten(details.drop(columns="guid"), SPALTEN_BAUTEILE)

@@ -1,0 +1,7 @@
+# Erscheinungsbild der Weboberflaeche (gilt fuer main.py und Z_main_v1.py)
+[theme]
+base = "dark"
+primaryColor = "#1F4E5A"
+backgroundColor = "#0E1417"
+secondaryBackgroundColor = "#162024"
+textColor = "#E8EEF0"
